@@ -30,16 +30,6 @@ procinit(void)
   initlock(&pid_lock, "nextpid");
   for(p = proc; p < &proc[NPROC]; p++) {
       initlock(&p->lock, "proc");
-
-      // Allocate a page for the process's kernel stack.
-      // Map it high in memory, followed by an invalid
-      // guard page.
-      char *pa = kalloc();
-      if(pa == 0)
-        panic("kalloc");
-      uint64 va = KSTACK((int) (p - proc));
-      kvmmap(va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
-      p->kstack = va;
   }
   kvminithart();
 }
@@ -112,6 +102,19 @@ found:
     release(&p->lock);
     return 0;
   }
+  p->kpagetable = ukvminit();
+  if (p->kpagetable == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+
+  char *pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK((int) (p - proc));
+  ukvmmap(p->kpagetable, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
@@ -141,6 +144,11 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if (p->kpagetable){
+    uvmunmap(p->kpagetable, p->kstack, 1, 1);
+    freeukvm(p->kpagetable, 2);
+  }
+
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -221,6 +229,13 @@ userinit(void)
   uvminit(p->pagetable, initcode, sizeof(initcode));
   p->sz = PGSIZE;
 
+  pte_t* pte, *kPte;
+  for(uint i = 0; i < p->sz; i += PGSIZE){
+    pte = walk(p->pagetable, i, 0);
+    kPte = walk(p->kpagetable, i, 1);
+    *kPte = (*pte) & ~PTE_U;
+  }
+
   // prepare for the very first "return" from kernel to user.
   p->trapframe->epc = 0;      // user program counter
   p->trapframe->sp = PGSIZE;  // user stack pointer
@@ -240,6 +255,9 @@ growproc(int n)
 {
   uint sz;
   struct proc *p = myproc();
+  if (p->sz>=PLIC) {
+    return -1;
+  }
 
   sz = p->sz;
   if(n > 0){
@@ -249,6 +267,25 @@ growproc(int n)
   } else if(n < 0){
     sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
+
+  // update kernal page table 
+  
+  uint oldsz = PGROUNDUP(p->sz);
+  uint newSz = n+p->sz;
+  if (n>0){
+    pte_t *pte, *kPte;
+    for (uint a=oldsz;a<newSz;a+=PGSIZE){
+      pte = walk(p->pagetable, a, 0);
+      kPte = walk(p->kpagetable, a, 1);
+      *kPte = (*pte) & ~PTE_U;
+    }
+  } else{
+    if(PGROUNDUP(newSz) < PGROUNDUP(oldsz)){
+      int npages = (oldsz - PGROUNDUP(newSz)) / PGSIZE;
+      uvmunmap(p->kpagetable, PGROUNDUP(newSz), npages, 0);
+    }
+  }
+
   p->sz = sz;
   return 0;
 }
@@ -274,6 +311,14 @@ fork(void)
     return -1;
   }
   np->sz = p->sz;
+
+  // Copy user pagetable to the new kernal pagetable
+  pte_t *pte, *kPte;
+  for(i = 0; i < np->sz; i += PGSIZE){
+    pte = walk(np->pagetable, i, 0);
+    kPte = walk(np->kpagetable, i, 1);
+    *kPte = (*pte) & ~PTE_U;
+  }
 
   np->parent = p;
 
@@ -473,12 +518,13 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
+        ukvminithart(p->kpagetable);
         swtch(&c->context, &p->context);
+        
 
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
-
         found = 1;
       }
       release(&p->lock);
@@ -486,6 +532,7 @@ scheduler(void)
 #if !defined (LAB_FS)
     if(found == 0) {
       intr_on();
+      kvminithart();
       asm volatile("wfi");
     }
 #else

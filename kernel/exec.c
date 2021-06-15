@@ -116,6 +116,19 @@ exec(char *path, char **argv)
   p->trapframe->sp = sp; // initial stack pointer
   proc_freepagetable(oldpagetable, oldsz);
 
+
+  //free old kernal pagetable
+  uvmunmap(p->kpagetable, 0, PGROUNDUP(oldsz)/PGSIZE, 0);
+  if (p->sz>PLIC) goto bad;
+  pte_t *pte, *kPte;
+  for(i = 0; i < p->sz; i += PGSIZE){
+    pte = walk(p->pagetable, i, 0);
+    kPte = walk(p->kpagetable, i, 1);
+    *kPte = (*pte) & ~PTE_U;
+  }
+
+  if(p->pid==1) vmprint(p->pagetable);
+
   return argc; // this ends up in a0, the first argument to main(argc, argv)
 
  bad:
