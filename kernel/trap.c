@@ -69,10 +69,10 @@ usertrap(void)
     // ok
   } else if (r_scause() == 13 || r_scause() == 15){
     //printf("page fault scause %p sepc=%p stval=%p\n", r_scause(), r_sepc(), r_stval());
-    if (r_stval()<p->sz){
+    if (r_stval()<p->sz && r_stval()>=p->trapframe->sp){
       char* mem = kalloc();
       if(mem == 0){
-        printf("Not enough mem in page fault\n");
+        printf("Not enough mem in page fault %p\n", p->sz);
         p->killed = 1;
         exit(-1);
       }
@@ -84,7 +84,7 @@ usertrap(void)
         exit(-1);
       }
     }else{
-      printf("Fail: less than sz\n");
+      //printf("Fail: more than sz sz: %p access: %p\n", p->sz, r_stval());
       p->killed = 1;
       exit(-1);
     }

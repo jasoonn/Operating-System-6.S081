@@ -98,15 +98,28 @@ walkaddr(pagetable_t pagetable, uint64 va)
 {
   pte_t *pte;
   uint64 pa;
-
+  struct proc *p = myproc();
   if(va >= MAXVA)
     return 0;
 
   pte = walk(pagetable, va, 0);
-  if(pte == 0)
-    return 0;
-  if((*pte & PTE_V) == 0)
-    return 0;
+
+  if(pte == 0 || (*pte & PTE_V) == 0){
+    if (va<p->sz && va>=p->trapframe->sp){
+      char* mem = kalloc();
+      if(mem == 0){
+        panic("No memory");
+      }
+      memset(mem, 0, PGSIZE);
+      if(mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+        kfree(mem);
+        panic("cannot mappage");
+      }
+      pte = walk(pagetable, va, 0);
+    }else{
+      return 0;
+    }
+  }
   if((*pte & PTE_U) == 0)
     return 0;
   pa = PTE2PA(*pte);
@@ -177,16 +190,16 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
 {
   uint64 a;
   pte_t *pte;
-  struct proc *p = myproc();
+
   if((va % PGSIZE) != 0)
     panic("uvmunmap: not aligned");
 
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
-    if((pte = walk(pagetable, a, 0)) == 0)
-      panic("uvmunmap: walk");
+    if((pte = walk(pagetable, a, 0)) == 0){
+      continue;
+    }
     if((*pte & PTE_V) == 0){
-      if (a<p->trapframe->sp) panic("uvmunmap: not mapped");
-      else continue;
+      continue;
     }
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
@@ -196,6 +209,7 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     }
     *pte = 0;
   }
+
 }
 
 // create an empty user page table.
@@ -316,17 +330,12 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   uint64 pa, i;
   uint flags;
   char *mem;
-  struct proc *p = myproc();
   for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
+    if((pte = walk(old, i, 0)) == 0){
+      continue;
+    }
     if((*pte & PTE_V) == 0){
-      if (i<p->trapframe->sp){
-        panic("uvmcopy: page not present");
-      }
-      else{
-        continue;
-      }
+      continue;
     }
       
     pa = PTE2PA(*pte);
@@ -339,11 +348,41 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
       goto err;
     }
   }
+  // printf("sp: %p\n", p->trapframe->sp);
+  // printf("old:");
+  // vmprint(old);
+  // printf("new");
+  // vmprint(new);
   return 0;
 
  err:
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
+}
+
+void
+printWalk(pagetable_t pagetable, int level)
+{
+  char* prefix;
+  if (level==0) prefix = "..";
+  else if (level==1) prefix = ".. ..";
+  else if (level==2) prefix = ".. .. ..";
+  else return;
+  for(int i=0; i<512; i++){
+    pte_t pte = pagetable[i];
+    if(pte&PTE_V){
+      printf("%s%d: pte %p pa %p\n", prefix, i, pte, PTE2PA(pte));
+      if((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        printWalk((pagetable_t)PTE2PA(pte), level+1);
+      }
+    }
+  }
+}
+
+void vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+  printWalk(pagetable, 0);
 }
 
 // mark a PTE invalid for user access.

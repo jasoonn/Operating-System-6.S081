@@ -2669,7 +2669,6 @@ main(int argc, char *argv[])
 {
   int continuous = 0;
   char *justone = 0;
-
   if(argc == 2 && strcmp(argv[1], "-c") == 0){
     continuous = 1;
   } else if(argc == 2 && strcmp(argv[1], "-C") == 0){
