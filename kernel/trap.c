@@ -67,7 +67,31 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if (r_scause() == 15){
+    if (r_stval()<p->sz){
+      pte_t * pte = walk(p->pagetable, r_stval(), 0);
+      //printf("Write page fault %d va %p pa %p", p->pid, r_stval(), PTE2PA(*pte));
+      if (minusOne(PTE2PA(*pte))==1){
+        //printf("old page %d\n", getCount(PTE2PA(*pte)));
+        pte_t * pte = walk(p->pagetable, r_stval(), 0);
+        *pte |= PTE_W;
+      }else{
+        //printf("new page %d\n", getCount(PTE2PA(*pte)));
+        char* mem = kalloc();
+        if(mem == 0){
+          printf("Not enough mem in page fault %p\n", p->sz);
+          p->killed = 1;
+          exit(-1);
+        }
+        memmove(mem, (void*)PTE2PA(*pte), PGSIZE);
+        *pte = PA2PTE(mem) | PTE_FLAGS(*pte) | PTE_W;
+      }
+    }else{
+      printf("usertrap(): unexpected scause in 15 %p pid=%d\n", r_scause(), p->pid);
+      printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+      p->killed = 1;
+    }
+  }else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

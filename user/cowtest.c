@@ -53,7 +53,8 @@ simpletest()
 void
 threetest()
 {
-  uint64 phys_size = PHYSTOP - KERNBASE;
+  //uint64 phys_size = PHYSTOP - KERNBASE;
+  uint64 phys_size = 4096*2;
   int sz = phys_size / 4;
   int pid1, pid2;
 
@@ -82,7 +83,7 @@ threetest()
       }
       for(char *q = p; q < p + (sz/5)*4; q += 4096){
         if(*(int*)q != getpid()){
-          printf("wrong content\n");
+          printf("wrongg content\n");
           exit(-1);
         }
       }
@@ -104,7 +105,7 @@ threetest()
 
   for(char *q = p; q < p + sz; q += 4096){
     if(*(int*)q != getpid()){
-      printf("wrong content\n");
+      printf("wrongggg content %d %d\n", *(int*)q, getpid());
       exit(-1);
     }
   }
