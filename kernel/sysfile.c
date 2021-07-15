@@ -16,6 +16,7 @@
 #include "file.h"
 #include "fcntl.h"
 
+
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -284,6 +285,39 @@ create(char *path, short type, short major, short minor)
 }
 
 uint64
+sys_symlink(void)
+{
+  char target[MAXPATH], path[MAXPATH], name[DIRSIZ];
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  
+  struct inode *dp;
+  begin_op();
+  if ((dp = namei(path)) ==0){
+    if((dp = nameiparent(path, name)) == 0){
+      end_op();
+      printf("FAIL in symlink find parent\n");
+      return -1;
+    }
+    else{
+      if ((dp = create(path, T_SYMLINK, 0, 0))==0){
+        end_op();
+        printf("FAIL in symlink create path\n");
+        return -1;
+      }else{
+        iunlock(dp);
+      }
+    }
+  }
+  ilock(dp);
+  writei(dp,0,(uint64)target,dp->size,MAXPATH);
+  iunlockput(dp);
+  end_op();
+  return 0;
+}
+
+uint64
 sys_open(void)
 {
   char path[MAXPATH];
@@ -304,7 +338,7 @@ sys_open(void)
       return -1;
     }
   } else {
-    if((ip = namei(path)) == 0){
+    if((ip = getip(path, 0, omode)) == 0){
       end_op();
       return -1;
     }
