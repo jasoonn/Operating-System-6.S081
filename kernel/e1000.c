@@ -20,6 +20,7 @@ static struct mbuf *rx_mbufs[RX_RING_SIZE];
 static volatile uint32 *regs;
 
 struct spinlock e1000_lock;
+struct spinlock e1000_lock2;
 
 // called by pci_init().
 // xregs is the memory address at which the
@@ -30,6 +31,7 @@ e1000_init(uint32 *xregs)
   int i;
 
   initlock(&e1000_lock, "e1000");
+  initlock(&e1000_lock2, "e10002");
 
   regs = xregs;
 
@@ -102,7 +104,25 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
-  
+  acquire(&e1000_lock);
+  uint32 index = regs[E1000_TDT];
+  if (!(tx_ring[index].status & E1000_TXD_STAT_DD)) {
+    release(&e1000_lock);
+    return -1;
+  }
+  if (tx_mbufs[index]) {
+    mbuffree(tx_mbufs[index]);
+  }
+  tx_mbufs[index] = m;
+  memset(&tx_ring[index],0,sizeof(tx_ring[index]));
+  // fill in the descriptor. m->head points to the packet's content in memory, and m->len is the packet length.
+  tx_ring[index].addr = (uint64)m->head;
+  tx_ring[index].length = m->len;
+  // set the necessary cmd flags.
+  tx_ring[index].cmd = E1000_TXD_CMD_RS | E1000_TXD_CMD_EOP;
+  // update the ring position by adding one to E1000_TDT modulo TX_RING_SIZE.
+  regs[E1000_TDT] = (index + 1) % TX_RING_SIZE;
+  release(&e1000_lock);
   return 0;
 }
 
@@ -115,6 +135,30 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+  while (1) {
+    // fetching the E1000_RDT control register.
+    uint32 index = regs[E1000_RDT];
+    // adding one modulo RX_RING_SIZE.
+    index = (index + 1) % RX_RING_SIZE;
+    // check if a new packet is available by checking for the E1000_RXD_STAT_DD bit 
+    // in the status portion of the descriptor. If not, stop.
+    if (!(rx_ring[index].status & E1000_RXD_STAT_DD)) {
+      return;
+    }
+    // update the mbuf's m->len to the length reported in the descriptor. 
+    rx_mbufs[index]->len = rx_ring[index].length;
+    // deliver the mbuf to the network stack using net_rx().
+    net_rx(rx_mbufs[index]);
+    // allocate a new mbuf using mbufalloc() to replace the one just given to net_rx().
+    struct mbuf *m = mbufalloc(0);
+    rx_mbufs[index] = m;
+    // program its data pointer (m->head) into the descriptor. 
+    rx_ring[index].addr = (uint64)m->head;
+    // clear the descriptor's status bits to zero.
+    rx_ring[index].status = 0;
+    // update the E1000_RDT register to be the index of the last ring descriptor processed
+    regs[E1000_RDT] = index;
+  }
 }
 
 void
@@ -123,7 +167,9 @@ e1000_intr(void)
   // tell the e1000 we've seen this interrupt;
   // without this the e1000 won't raise any
   // further interrupts.
+  acquire(&e1000_lock2);
   regs[E1000_ICR] = 0xffffffff;
-
+  __sync_synchronize();
   e1000_recv();
+  release(&e1000_lock2);
 }
